@@ -1,5 +1,5 @@
 # Génère le logo LaguineeDje (SVG + PNG). Dépendances : fonttools shapely scipy numpy cairosvg.
-# Police : Anton (OFL, Google Fonts) à placer dans fonts/Anton-Regular.ttf. Usage : python3 build_logo.py <dossier_sortie>
+# Police : Anton (OFL, Google Fonts) à placer dans fonts/Anton-Regular.ttf. Usage : python3 build_logo.py <dossier_sortie> [TEXTE]  (ex. LaguineeDje pour la version en minuscules)
 import sys, numpy as np
 from fontTools.ttLib import TTFont
 from fontTools.pens.recordingPen import DecomposingRecordingPen
@@ -74,16 +74,19 @@ bv = [.0, .15, .33, .56, .78, .92, .90, .76, .58, .44, .48, .70, 1.0]
 top = PchipInterpolator(tu, np.array(tv)*HH)
 bot = PchipInterpolator(tu, -np.array(bv)*HH)
 
-TEXT = "LAGUINEEDJE"
-glyphs, tw = layout(TEXT, track=-6, xscale={0: 1.35, len(TEXT)-1: 1.5})
+TEXT = sys.argv[2] if len(sys.argv) > 2 else "LAGUINEEDJE"
+MIXED = TEXT != TEXT.upper()   # casse mixte : chaque lettre est étirée pour remplir la silhouette
+glyphs, tw = layout(TEXT, track=-6, xscale={0: 1.35, len(TEXT)-1: 1.8 if MIXED else 1.5})
 U0 = 0.105
-def warp(p):
-    u = U0 + (1-U0)*np.clip(p[0]/tw, 0, 1); v = p[1]/CAP
+def warp(p, y0=0, y1=CAP):
+    u = U0 + (1-U0)*np.clip(p[0]/tw, 0, 1); v = (p[1]-y0)/(y1-y0)
     x = u*W
     return (x, bot(u) + v*(top(u)-bot(u)))
 parts = []
 for g in glyphs:
-    parts.append(to_poly([[warp(p) for p in densify(c, 25)] for c in g]))
+    ys = [q[1] for c in g for q in c]
+    y0, y1 = (min(ys), max(ys)) if MIXED else (0, CAP)
+    parts.append(to_poly([[warp(q, y0, y1) for q in densify(c, 25)] for c in g]))
 body = unary_union(parts)
 
 def blade(pts, n=24):
@@ -112,9 +115,11 @@ _ys = sorted({round(p[1]) for c in glyph_contours("E")[0] for p in c})
 arm_t, arm_b = (CAP-_ys[-2])/CAP*(yt-yb), (_ys[1]-_ys[0])/CAP*(yt-yb)
 def quad(p0, c, p1, n=30):
     return [((1-t)**2*p0[0]+2*(1-t)*t*c[0]+t*t*p1[0], (1-t)**2*p0[1]+2*(1-t)*t*c[1]+t*t*p1[1]) for t in np.linspace(0, 1, n)]
+LOBE_ARM = 0.2
 def lobe(s):
     f = top if s > 0 else bot
     arm = arm_t if s > 0 else arm_b
+    if MIXED: arm = (yt-yb)*LOBE_ARM
     y = float(f(1.0)); sl = float(f.derivative()(1.0))/W
     xi = xe-30; yi = float(f(xi/W))
     a, tip, c = (xe, y), (xe+150, y+s*72), (xe, y-s*arm)
@@ -134,6 +139,11 @@ def slash(x0, y0, x1, y1, w):
 cuts = [eye, mouth,
         slash(345, T(.33)+30, 285, -25, 9), slash(520, B(.50)-30, 585, 30, 9),
         slash(760, T(.74)+25, 715, -5, 7)]
+if MIXED:  # entailles placées sur les fûts épais (u, n, D) pour ne pas abîmer les lettres fines
+    def on(i, f, up, w=7):
+        x0, _, x1, _ = parts[i].bounds; x = x0+(x1-x0)*f
+        return slash(x+22, T(x/W)+25, x-18, 10, w) if up else slash(x-22, B(x/W)-25, x+18, -10, w)
+    cuts = [eye, mouth, on(3, .30, True), on(5, .28, False), on(8, .30, True, 6)]
 fish = fish.difference(unary_union(cuts))
 
 # ---------- tagline ----------
@@ -163,7 +173,9 @@ def svg(bg, pad):
             f'<path fill="{NAVY}" fill-rule="evenodd" d="{path(fish)}"/>'
             f'<path fill="{TURQ}" fill-rule="evenodd" d="{path(tag)}"/></svg>')
 out = sys.argv[1] if len(sys.argv) > 1 else "out"
-open(f"{out}/logo-laguineedje.svg", "w").write(svg(None, 40))
+if MIXED: out += "/logo-laguineedje-minuscules"
+else: out += "/logo-laguineedje"
+open(f"{out}.svg", "w").write(svg(None, 40))
 import cairosvg
-cairosvg.svg2png(bytestring=svg("#FFFFFF", 150).encode(), write_to=f"{out}/logo-laguineedje.png", output_width=2400)
-cairosvg.svg2png(bytestring=svg(None, 40).encode(), write_to=f"{out}/logo-laguineedje-transparent.png", output_width=2400)
+cairosvg.svg2png(bytestring=svg("#FFFFFF", 150).encode(), write_to=f"{out}.png", output_width=2400)
+cairosvg.svg2png(bytestring=svg(None, 40).encode(), write_to=f"{out}-transparent.png", output_width=2400)
