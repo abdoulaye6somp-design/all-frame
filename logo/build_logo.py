@@ -13,6 +13,7 @@ font = TTFont("fonts/Anton-Regular.ttf")
 gs, cmap, upm = font.getGlyphSet(), font.getBestCmap(), font["head"].unitsPerEm
 CAP = font["OS/2"].sCapHeight
 
+NQ = 13
 def glyph_contours(ch):
     pen = DecomposingRecordingPen(gs); gs[cmap[ord(ch)]].draw(pen)
     cs, cur = [], []
@@ -28,7 +29,7 @@ def glyph_contours(ch):
                 e = pts[i+1] if i == len(pts) - 2 else ((pts[i][0]+pts[i+1][0])/2, (pts[i][1]+pts[i+1][1])/2)
                 segs.append((c, e))
             for c, e in segs:
-                for t in np.linspace(0, 1, 13)[1:]:
+                for t in np.linspace(0, 1, NQ)[1:]:
                     cur.append(((1-t)**2*p0[0]+2*(1-t)*t*c[0]+t*t*e[0], (1-t)**2*p0[1]+2*(1-t)*t*c[1]+t*t*e[1]))
                 p0 = e
         elif op == "curveTo":
@@ -67,17 +68,24 @@ def to_poly(contours):
     return g
 
 # ---------- fish envelope ----------
+TEXT = sys.argv[2] if len(sys.argv) > 2 else "LAGUINEEDJE"
+MIXED = TEXT != TEXT.upper()   # casse mixte : chaque lettre est étirée pour remplir la silhouette
+SHORT = len(TEXT) <= 3         # sigle (ex. LG) : poisson court et trapu, la dernière lettre porte la queue
 W, HH = 1000.0, 122.0
 tu = [0, .03, .08, .16, .26, .38, .52, .68, .80, .885, .93, .965, 1.0]
 tv = [.0, .17, .38, .64, .86, 1.0, .96, .78, .58, .44, .48, .70, 1.0]
 bv = [.0, .15, .33, .56, .78, .92, .90, .76, .58, .44, .48, .70, 1.0]
+if SHORT:
+    NQ = 40
+    W, HH = 640.0, 150.0
+    tu = [0, .04, .10, .20, .32, .45, .60, .74, .86, .93, 1.0]
+    tv = [.0, .20, .42, .68, .88, 1.0, .97, .82, .66, .70, .92]
+    bv = [.0, .18, .37, .60, .80, .92, .90, .78, .66, .70, .92]
 top = PchipInterpolator(tu, np.array(tv)*HH)
 bot = PchipInterpolator(tu, -np.array(bv)*HH)
 
-TEXT = sys.argv[2] if len(sys.argv) > 2 else "LAGUINEEDJE"
-MIXED = TEXT != TEXT.upper()   # casse mixte : chaque lettre est étirée pour remplir la silhouette
-glyphs, tw = layout(TEXT, track=-6, xscale={0: 1.35, len(TEXT)-1: 1.8 if MIXED else 1.5})
-U0 = 0.105
+glyphs, tw = layout(TEXT, track=-45 if SHORT else -6, xscale={0: 0.62, 1: 1.3} if SHORT else {0: 1.35, len(TEXT)-1: 1.8 if MIXED else 1.5})
+U0 = 0.19 if SHORT else 0.105
 def warp(p, y0=0, y1=CAP):
     u = U0 + (1-U0)*np.clip(p[0]/tw, 0, 1); v = (p[1]-y0)/(y1-y0)
     x = u*W
@@ -86,12 +94,12 @@ parts = []
 for g in glyphs:
     ys = [q[1] for c in g for q in c]
     y0, y1 = (min(ys), max(ys)) if MIXED else (0, CAP)
-    parts.append(to_poly([[warp(q, y0, y1) for q in densify(c, 25)] for c in g]))
+    parts.append(to_poly([[warp(q, y0, y1) for q in densify(c, 8 if SHORT else 25)] for c in g]))
 body = unary_union(parts)
 
-def blade(pts, n=24):
+def blade(pts, n=None):
     """closed shape from quadratic segments: list of (p0, ctrl, p1)"""
-    out = []
+    out = []; n = n or (70 if SHORT else 24)
     for p0, c, p1 in pts:
         for t in np.linspace(0, 1, n, endpoint=False):
             out.append(((1-t)**2*p0[0]+2*(1-t)*t*c[0]+t*t*p1[0], (1-t)**2*p0[1]+2*(1-t)*t*c[1]+t*t*p1[1]))
@@ -108,27 +116,36 @@ def fin(i, f0, f1, sweep, h, up=True, inset=14):
     return blade([(a, (a[0]+(tip[0]-a[0])*.62, a[1]+(tip[1]-a[1])*.30), tip),
                   (tip, (b[0]+sweep*.10, b[1]+(tip[1]-b[1])*.30), b),
                   (b, ((a[0]+b[0])/2, E((xa+xb)/2)-sgn*4), a)])
-fins = [fin(1, .15, 1.0, 26, 62), fin(6, .0, 1.0, 30, 40),
-        fin(3, .0, 1.0, 34, 48, up=False), fin(7, .0, 1.0, 30, 36, up=False)]
+if SHORT:
+    fins = [fin(1, .14, .42, 46, 80), fin(0, .30, 1.0, 46, 60, up=False), fin(1, .36, .62, 42, 48, up=False)]
+else:
+    fins = [fin(1, .15, 1.0, 26, 62), fin(6, .0, 1.0, 30, 40),
+            fin(3, .0, 1.0, 34, 48, up=False), fin(7, .0, 1.0, 30, 36, up=False)]
 xe, yt, yb = W, T(1.0), B(1.0)
 _ys = sorted({round(p[1]) for c in glyph_contours("E")[0] for p in c})
 arm_t, arm_b = (CAP-_ys[-2])/CAP*(yt-yb), (_ys[1]-_ys[0])/CAP*(yt-yb)
-def quad(p0, c, p1, n=30):
+def quad(p0, c, p1, n=None):
+    n = n or (80 if SHORT else 30)
     return [((1-t)**2*p0[0]+2*(1-t)*t*c[0]+t*t*p1[0], (1-t)**2*p0[1]+2*(1-t)*t*c[1]+t*t*p1[1]) for t in np.linspace(0, 1, n)]
 LOBE_ARM = 0.2
 def lobe(s):
     f = top if s > 0 else bot
     arm = arm_t if s > 0 else arm_b
-    if MIXED: arm = (yt-yb)*LOBE_ARM
+    if MIXED or SHORT: arm = (yt-yb)*((0.36 if s > 0 else 0.27) if SHORT else LOBE_ARM)
     y = float(f(1.0)); sl = float(f.derivative()(1.0))/W
     xi = xe-30; yi = float(f(xi/W))
     a, tip, c = (xe, y), (xe+150, y+s*72), (xe, y-s*arm)
     pts = [(xi, yi-s*3)] + quad(a, (xe+50, y+50*sl), tip) + quad(tip, (xe+55, y-s*arm*.15), c) + [(xi, yi-s*arm*.8)]
     return Polygon(pts).buffer(0)
 tail_up, tail_dn = lobe(1), lobe(-1)
-us = np.linspace(0, U0+0.012, 40)
+us = np.linspace(0, U0+(0.035 if SHORT else 0.012), 40)
 snout = Polygon([(u*W, T(u)) for u in us] + [(u*W, B(u)) for u in us[::-1]]).buffer(0)
-fish = unary_union([body, snout, tail_up, tail_dn] + fins)
+extra = []
+if SHORT:  # comble l'encoche du G le long du ventre pour que la queue parte d'un bord net
+    gx0, _, gx1, _ = parts[-1].bounds
+    xs = np.linspace(gx0+(gx1-gx0)*.55, xe, 30)
+    extra = [Polygon([(x, B(x/W)) for x in xs] + [(x, B(x/W)+(T(x/W)-B(x/W))*.12) for x in xs[::-1]]).buffer(0)]
+fish = unary_union([body, snout, tail_up, tail_dn] + fins + extra)
 
 # cuts: eye, mouth, slashes
 eye = Point(88, 24).buffer(8.5)
@@ -139,21 +156,26 @@ def slash(x0, y0, x1, y1, w):
 cuts = [eye, mouth,
         slash(345, T(.33)+30, 285, -25, 9), slash(520, B(.50)-30, 585, 30, 9),
         slash(760, T(.74)+25, 715, -5, 7)]
-if MIXED:  # entailles placées sur les fûts épais (u, n, D) pour ne pas abîmer les lettres fines
-    def on(i, f, up, w=7):
-        x0, _, x1, _ = parts[i].bounds; x = x0+(x1-x0)*f
-        return slash(x+22, T(x/W)+25, x-18, 10, w) if up else slash(x-22, B(x/W)-25, x+18, -10, w)
+def on(i, f, up, w=7):
+    x0, _, x1, _ = parts[i].bounds; x = x0+(x1-x0)*f
+    return slash(x+22, T(x/W)+25, x-18, 10, w) if up else slash(x-22, B(x/W)-25, x+18, -10, w)
+if SHORT:
+    eye = Point(92, 30).buffer(9.5)
+    mouth = blade([((-5, -11), (55, -27), (128, -18)), ((128, -18), (55, -15), (-5, -3))])
+    cuts = [eye, mouth, on(1, .30, True, 9), on(0, .70, False, 8)]
+elif MIXED:  # entailles placées sur les fûts épais (u, n, D) pour ne pas abîmer les lettres fines
     cuts = [eye, mouth, on(3, .30, True), on(5, .28, False), on(8, .30, True, 6)]
 fish = fish.difference(unary_union(cuts))
 
 # ---------- tagline ----------
 tg, ttw = layout("MANGER MIEUX", track=0.42*upm)
-ts = 64/CAP
+fx0, fy0, fx1, fy1 = fish.bounds
+ts = 0.86*(fx1-fx0)/ttw if SHORT else 64/CAP
 tag = unary_union([to_poly(g) for g in tg])
 tag = affinity.scale(tag, ts, ts, origin=(0, 0))
-fx0, fy0, fx1, fy1 = fish.bounds
-tag = affinity.translate(tag, (fx0+fx1)/2 - ttw*ts/2, fy0 - 64 - 46)
+tag = affinity.translate(tag, (fx0+fx1)/2 - ttw*ts/2, fy0 - CAP*ts - 46)
 
+NAME = TEXT if SHORT else "LaguineeDje"
 def path(geom):
     d = []
     for poly in getattr(geom, "geoms", [geom]):
@@ -168,12 +190,13 @@ y0 = tag.bounds[1]; y1 = fish.bounds[3]
 def svg(bg, pad):
     vb = f"{x0-pad:.0f} {-y1-pad:.0f} {x1-x0+2*pad:.0f} {y1-y0+2*pad:.0f}"
     r = f'<rect x="{x0-pad:.0f}" y="{-y1-pad:.0f}" width="100%" height="100%" fill="{bg}"/>' if bg else ""
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}" role="img" aria-label="LaguineeDje — Manger mieux">'
-            f'<title>LaguineeDje — Manger mieux</title>{r}'
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}" role="img" aria-label="{NAME} — Manger mieux">'
+            f'<title>{NAME} — Manger mieux</title>{r}'
             f'<path fill="{NAVY}" fill-rule="evenodd" d="{path(fish)}"/>'
             f'<path fill="{TURQ}" fill-rule="evenodd" d="{path(tag)}"/></svg>')
 out = sys.argv[1] if len(sys.argv) > 1 else "out"
-if MIXED: out += "/logo-laguineedje-minuscules"
+if SHORT: out += "/logo-" + TEXT.lower()
+elif MIXED: out += "/logo-laguineedje-minuscules"
 else: out += "/logo-laguineedje"
 open(f"{out}.svg", "w").write(svg(None, 40))
 import cairosvg
